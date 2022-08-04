@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022 WSO2 Inc. (http://www.wso2.org) All Rights Reserved.
+ * Copyright (c) 2022 WSO2 LLC. (http://www.wso2.org) All Rights Reserved.
  *
  * WSO2 Inc. licenses this file to you under the Apache License,
  * Version 2.0 (the "License"); you may not use this file except
@@ -23,56 +23,71 @@ import io.opentelemetry.api.common.Attributes;
 import io.opentelemetry.api.trace.Tracer;
 import io.opentelemetry.api.trace.propagation.W3CTraceContextPropagator;
 import io.opentelemetry.context.propagation.ContextPropagators;
+import io.opentelemetry.exporter.otlp.trace.OtlpGrpcSpanExporter;
+import io.opentelemetry.exporter.otlp.trace.OtlpGrpcSpanExporterBuilder;
 import io.opentelemetry.sdk.OpenTelemetrySdk;
 import io.opentelemetry.sdk.resources.Resource;
 import io.opentelemetry.sdk.trace.SdkTracerProvider;
 import io.opentelemetry.sdk.trace.export.BatchSpanProcessor;
 import io.opentelemetry.semconv.resource.attributes.ResourceAttributes;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.wso2.carbon.apimgt.impl.APIManagerConfiguration;
 import org.wso2.carbon.apimgt.tracing.internal.ServiceReferenceHolder;
 
-/**
- * Class for getting Log tracer from reading configuration file.
- */
-public class LogTelemetry implements APIMOpenTelemetry {
+import java.util.Set;
 
-    private static final APIManagerConfiguration configuration = ServiceReferenceHolder.getInstance()
-            .getAPIManagerConfiguration();
-    private static final String NAME = "log";
-    private static final Log log = LogFactory.getLog(LogTelemetry.class);
+/**
+ * Class for getting Otlp tracer from reading configuration file.
+ */
+public class OTLPTelemetry implements APIMOpenTelemetry {
+
+    private static final String NAME = "otlp";
+    private static final Log log = LogFactory.getLog(OTLPTelemetry.class);
+    private static final APIManagerConfiguration configuration =
+            ServiceReferenceHolder.getInstance().getAPIManagerConfiguration();
     private SdkTracerProvider sdkTracerProvider;
     private OpenTelemetry openTelemetry;
 
     @Override
     public void init(String serviceName) {
 
-        boolean logEnabled = Boolean.parseBoolean(configuration.getFirstProperty(TelemetryConstants.LOG_ENABLED));
+        String headerProperty = getHeaderKeyProperty();
+        String endPointURL = configuration.getFirstProperty(TelemetryConstants.OTLP_CONFIG_URL) != null ?
+                configuration.getFirstProperty(TelemetryConstants.OTLP_CONFIG_URL) : null;
+        String headerKey = headerProperty.substring(TelemetryConstants.OPENTELEMETRY_PROPERTIES_PREFIX.length());
 
-        if (logEnabled) {
+        String headerValue = configuration.getFirstProperty(headerProperty) != null ?
+                configuration.getFirstProperty(headerProperty) : null;
 
-            LogExporter logExporter = LogExporter.create();
+        if (StringUtils.isNotEmpty(endPointURL) && StringUtils.isNotEmpty(headerValue)) {
+            OtlpGrpcSpanExporterBuilder otlpGrpcSpanExporterBuilder = OtlpGrpcSpanExporter.builder()
+                    .setEndpoint(endPointURL)
+                    .setCompression("gzip")
+                    .addHeader(headerKey, headerValue);
 
             if (log.isDebugEnabled()) {
-                log.debug("Log exporter: " + logExporter + " is configured");
+                log.debug("OTLP exporter: " + otlpGrpcSpanExporterBuilder + " is configured at " + endPointURL);
             }
 
             Resource serviceNameResource = Resource.create(Attributes.of(ResourceAttributes.SERVICE_NAME, serviceName));
 
             sdkTracerProvider = SdkTracerProvider.builder()
-                    .addSpanProcessor(BatchSpanProcessor.builder(logExporter).build())
+                    .addSpanProcessor(BatchSpanProcessor.builder(otlpGrpcSpanExporterBuilder.build()).build())
                     .setResource(Resource.getDefault().merge(serviceNameResource))
                     .build();
 
             openTelemetry = OpenTelemetrySdk.builder()
-                    .setTracerProvider(sdkTracerProvider)
-                    .setPropagators(ContextPropagators.create(W3CTraceContextPropagator.getInstance()))
+                    .setTracerProvider(sdkTracerProvider).
+                    setPropagators(ContextPropagators.create(W3CTraceContextPropagator.getInstance()))
                     .build();
 
             if (log.isDebugEnabled()) {
                 log.debug("OpenTelemetry instance: " + openTelemetry + " is configured.");
             }
+        } else {
+            log.error("Either endpoint url or the header key value is null or empty");
         }
     }
 
@@ -101,4 +116,21 @@ public class LogTelemetry implements APIMOpenTelemetry {
             sdkTracerProvider.close();
         }
     }
+
+    /**
+     * Return the header key from properties file for specific OTLP based APM.
+     *
+     * @return Header key.
+     */
+    public String getHeaderKeyProperty() {
+
+        Set<String> keySet = configuration.getConfigKeySet();
+        for (String property : keySet) {
+            if (property.startsWith(TelemetryConstants.OPENTELEMETRY_PROPERTIES_PREFIX)) {
+                return property;
+            }
+        }
+        return null;
+    }
+
 }
